@@ -29,14 +29,14 @@ serve(async (req) => {
     const clientSecret = Deno.env.get('PBX_CLIENT_SECRET');
     
     const tokenUrl = 'https://pbx.natew.me/admin/api/api/token';
-    const restUrl = 'https://pbx.natew.me/admin/api/api/rest';
+    const gqlUrl = 'https://pbx.natew.me/admin/api/api/gql';
 
     if (!clientId || !clientSecret) {
       console.error('PBX API credentials not configured');
       throw new Error('PBX API credentials not configured');
     }
 
-    console.log('Authenticating with FreePBX REST API...');
+    console.log('Authenticating with FreePBX API...');
 
     // Step 1: Get OAuth2 access token using client credentials grant
     const tokenResponse = await fetch(tokenUrl, {
@@ -47,7 +47,7 @@ serve(async (req) => {
       },
       body: new URLSearchParams({
         'grant_type': 'client_credentials',
-        'scope': 'rest',
+        'scope': 'gql',
       }).toString(),
     });
 
@@ -67,41 +67,64 @@ serve(async (req) => {
 
     console.log('Successfully obtained access token');
 
-    // Step 2: Fetch extensions using REST API
-    const extensionsResponse = await fetch(`${restUrl}/core/extensions`, {
-      method: 'GET',
+    // Step 2: Fetch extensions using GraphQL API
+    const gqlQuery = `
+      query {
+        fetchAllExtensions {
+          status
+          message
+          totalCount
+          extension {
+            extensionId
+            name
+            email
+            outboundCid
+            callerID
+            voicemail
+          }
+        }
+      }
+    `;
+
+    const gqlResponse = await fetch(gqlUrl, {
+      method: 'POST',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
-        'Accept': 'application/json',
+        'Content-Type': 'application/json',
       },
+      body: JSON.stringify({ query: gqlQuery }),
     });
 
-    if (!extensionsResponse.ok) {
-      const errorText = await extensionsResponse.text();
-      console.error('Extensions request failed:', extensionsResponse.status, errorText);
-      throw new Error(`Failed to fetch extensions: ${extensionsResponse.status}`);
+    if (!gqlResponse.ok) {
+      const errorText = await gqlResponse.text();
+      console.error('GraphQL request failed:', gqlResponse.status, errorText);
+      throw new Error(`Failed to fetch extensions: ${gqlResponse.status}`);
     }
 
-    const extensionsData = await extensionsResponse.json();
-    console.log('Extensions API response:', JSON.stringify(extensionsData).substring(0, 500));
+    const gqlData = await gqlResponse.json();
+    console.log('GraphQL response:', JSON.stringify(gqlData).substring(0, 500));
 
-    // Parse the response - adjust based on actual API structure
-    let extensions: FreePBXExtension[] = [];
-    
-    if (Array.isArray(extensionsData)) {
-      extensions = extensionsData.map(mapExtension);
-    } else if (extensionsData.data && Array.isArray(extensionsData.data)) {
-      extensions = extensionsData.data.map(mapExtension);
-    } else if (extensionsData.extensions && Array.isArray(extensionsData.extensions)) {
-      extensions = extensionsData.extensions.map(mapExtension);
-    } else {
-      console.log('Unexpected response structure, attempting to extract extensions');
-      // Try to find extensions in nested structure
-      const possibleArrays = Object.values(extensionsData).filter(Array.isArray);
-      if (possibleArrays.length > 0) {
-        extensions = (possibleArrays[0] as any[]).map(mapExtension);
-      }
+    // Check for GraphQL errors
+    if (gqlData.errors) {
+      console.error('GraphQL errors:', gqlData.errors);
+      throw new Error(`GraphQL error: ${gqlData.errors[0]?.message || 'Unknown error'}`);
     }
+
+    // Parse the response
+    const fetchResult = gqlData.data?.fetchAllExtensions;
+    if (!fetchResult?.status) {
+      console.error('fetchAllExtensions failed:', fetchResult?.message);
+      throw new Error(fetchResult?.message || 'Failed to fetch extensions');
+    }
+
+    const extensions: FreePBXExtension[] = (fetchResult.extension || []).map((ext: any) => ({
+      extension: String(ext.extensionId || ''),
+      name: ext.name || ext.callerID || '',
+      voicemail: ext.voicemail || '',
+      sipname: ext.extensionId || '',
+      outboundcid: ext.outboundCid || '',
+      email: ext.email || '',
+    }));
 
     console.log(`Parsed ${extensions.length} extensions`);
 
@@ -126,18 +149,3 @@ serve(async (req) => {
     });
   }
 });
-
-function mapExtension(ext: any): FreePBXExtension {
-  // Map various possible field names to our standard structure
-  return {
-    extension: String(ext.extension || ext.extensionId || ext.id || ext.number || ''),
-    name: ext.name || ext.displayName || ext.callerID || ext.description || '',
-    voicemail: ext.voicemail || ext.vmEnabled || '',
-    sipname: ext.sipname || ext.username || '',
-    outboundcid: ext.outboundcid || ext.outboundCid || '',
-    callwaiting: ext.callwaiting || ext.callWaiting || '',
-    vmcontext: ext.vmcontext || '',
-    noanswer: ext.noanswer || '',
-    recording: ext.recording || '',
-  };
-}
