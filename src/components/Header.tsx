@@ -1,4 +1,5 @@
-import { Phone, RefreshCw } from "lucide-react";
+import { RefreshCw } from "lucide-react";
+import netbridgeLogo from "@/assets/NetBridge_PBX.png";
 
 interface HeaderProps {
   onRefresh: () => void;
@@ -11,15 +12,12 @@ export function Header({ onRefresh, isLoading, lastUpdated }: HeaderProps) {
     <header className="sticky top-0 z-50 w-full border-b border-border/50 bg-background/80 backdrop-blur-xl">
       <div className="container mx-auto flex h-20 items-center justify-between px-4">
         <div className="flex items-center gap-4">
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl gradient-hero shadow-glow">
-            <Phone className="h-6 w-6 text-primary-foreground" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-foreground">
-              NetBridge <span className="text-gradient">PBX</span>
-            </h1>
-            <p className="text-sm text-muted-foreground">Extension Directory</p>
-          </div>
+          <img 
+            src={netbridgeLogo} 
+            alt="NetBridge PBX" 
+            className="h-12 w-auto"
+          />
+          <p className="text-sm text-muted-foreground">Extension Directory</p>
         </div>
 
         <div className="flex items-center gap-4">
