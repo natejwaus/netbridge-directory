@@ -75,7 +75,7 @@ export function ExtensionCard({ extension, index }: ExtensionCardProps) {
         {extension.department && (
           <div className="flex items-center gap-2.5 text-sm text-muted-foreground">
             <Building2 className="h-4 w-4 flex-shrink-0" />
-            <span className="truncate">{extension.department}</span>
+            <span className="truncate">Company: {extension.department}</span>
           </div>
         )}
 
