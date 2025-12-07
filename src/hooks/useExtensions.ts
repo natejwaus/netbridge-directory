@@ -1,21 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
+import { supabase } from '@/integrations/supabase/client';
 import type { Extension, ExtensionWithStatus, ExtensionStatus } from '@/types/extension';
-
-// Demo data - will be replaced with actual PBX data when backend is connected
-const demoExtensions: Extension[] = [
-  { extension: '101', name: 'John Smith', email: 'john@netbridge.com', department: 'Sales', voicemail: 'enabled' },
-  { extension: '102', name: 'Sarah Johnson', email: 'sarah@netbridge.com', department: 'Support', voicemail: 'enabled' },
-  { extension: '103', name: 'Mike Davis', email: 'mike@netbridge.com', department: 'Engineering', voicemail: 'enabled' },
-  { extension: '104', name: 'Emily Brown', email: 'emily@netbridge.com', department: 'Marketing', voicemail: 'enabled' },
-  { extension: '105', name: 'David Wilson', email: 'david@netbridge.com', department: 'Sales', voicemail: 'enabled' },
-  { extension: '106', name: 'Lisa Anderson', email: 'lisa@netbridge.com', department: 'HR', voicemail: 'enabled' },
-  { extension: '107', name: 'James Taylor', email: 'james@netbridge.com', department: 'Engineering', voicemail: 'enabled' },
-  { extension: '108', name: 'Jennifer Martinez', email: 'jennifer@netbridge.com', department: 'Finance', voicemail: 'enabled' },
-  { extension: '109', name: 'Robert Garcia', email: 'robert@netbridge.com', department: 'Support', voicemail: 'enabled' },
-  { extension: '110', name: 'Michelle Lee', email: 'michelle@netbridge.com', department: 'Sales', voicemail: 'enabled' },
-  { extension: '111', name: 'William Thomas', email: 'william@netbridge.com', department: 'Engineering', voicemail: 'enabled' },
-  { extension: '112', name: 'Amanda White', email: 'amanda@netbridge.com', department: 'Marketing', voicemail: 'enabled' },
-];
 
 function getRandomStatus(): ExtensionStatus {
   const statuses: ExtensionStatus[] = ['online', 'online', 'online', 'offline', 'busy', 'away'];
@@ -40,18 +25,49 @@ export function useExtensions() {
     setError(null);
     
     try {
-      // Simulate API delay
-      await new Promise(resolve => setTimeout(resolve, 800));
+      console.log('Fetching extensions from PBX...');
       
-      // TODO: Replace with actual API call to Supabase Edge Function
-      // const { data, error } = await supabase.functions.invoke('fetch-extensions');
+      const { data, error: fnError } = await supabase.functions.invoke('fetch-extensions');
       
+      if (fnError) {
+        console.error('Edge function error:', fnError);
+        throw new Error(fnError.message || 'Failed to fetch extensions');
+      }
+
+      console.log('Response from edge function:', data);
+
+      if (data?.success && data?.extensions) {
+        const extensionsWithStatus = addStatusToExtensions(data.extensions);
+        setExtensions(extensionsWithStatus);
+        setLastUpdated(new Date(data.lastUpdated || Date.now()));
+      } else if (data?.error) {
+        throw new Error(data.error);
+      } else {
+        // Fallback to demo data if no extensions returned
+        console.log('No extensions returned, using demo data');
+        const demoExtensions: Extension[] = [
+          { extension: '101', name: 'Reception', department: 'Front Desk', voicemail: 'enabled' },
+          { extension: '102', name: 'Support Team', department: 'Support', voicemail: 'enabled' },
+          { extension: '103', name: 'Sales Team', department: 'Sales', voicemail: 'enabled' },
+        ];
+        const extensionsWithStatus = addStatusToExtensions(demoExtensions);
+        setExtensions(extensionsWithStatus);
+        setLastUpdated(new Date());
+      }
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to fetch extensions';
+      setError(errorMessage);
+      console.error('Error fetching extensions:', err);
+      
+      // Use demo data on error
+      const demoExtensions: Extension[] = [
+        { extension: '101', name: 'Reception', department: 'Front Desk', voicemail: 'enabled' },
+        { extension: '102', name: 'Support Team', department: 'Support', voicemail: 'enabled' },
+        { extension: '103', name: 'Sales Team', department: 'Sales', voicemail: 'enabled' },
+      ];
       const extensionsWithStatus = addStatusToExtensions(demoExtensions);
       setExtensions(extensionsWithStatus);
       setLastUpdated(new Date());
-    } catch (err) {
-      setError('Failed to fetch extensions');
-      console.error('Error fetching extensions:', err);
     } finally {
       setIsLoading(false);
     }
@@ -60,8 +76,8 @@ export function useExtensions() {
   useEffect(() => {
     fetchExtensions();
     
-    // Auto-refresh every 30 seconds
-    const interval = setInterval(fetchExtensions, 30000);
+    // Auto-refresh every 60 seconds
+    const interval = setInterval(fetchExtensions, 60000);
     return () => clearInterval(interval);
   }, [fetchExtensions]);
 
