@@ -15,9 +15,8 @@ export function Header({ onRefresh, isLoading, lastUpdated }: HeaderProps) {
           <img 
             src={netbridgeLogo} 
             alt="NetBridge PBX" 
-            className="h-12 w-auto"
+            className="h-16 w-auto"
           />
-          <p className="text-sm text-muted-foreground">Extension Directory</p>
         </div>
 
         <div className="flex items-center gap-4">
