@@ -10,16 +10,11 @@ interface FreePBXExtension {
   name: string;
   voicemail?: string;
   sipname?: string;
-  outboundcid?: string;
-  callwaiting?: string;
-  vmcontext?: string;
-  noanswer?: string;
-  recording?: string;
+  tech?: string;
   [key: string]: string | undefined;
 }
 
 serve(async (req) => {
-  // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
@@ -32,13 +27,11 @@ serve(async (req) => {
     const gqlUrl = 'https://pbx.natew.me/admin/api/api/gql';
 
     if (!clientId || !clientSecret) {
-      console.error('PBX API credentials not configured');
       throw new Error('PBX API credentials not configured');
     }
 
     console.log('Authenticating with FreePBX API...');
 
-    // Step 1: Get OAuth2 access token using client credentials grant
     const tokenResponse = await fetch(tokenUrl, {
       method: 'POST',
       headers: {
@@ -61,13 +54,78 @@ serve(async (req) => {
     const accessToken = tokenData.access_token;
 
     if (!accessToken) {
-      console.error('No access token in response:', tokenData);
       throw new Error('No access token received');
     }
 
     console.log('Successfully obtained access token');
 
-    // Step 2: Fetch extensions using GraphQL API
+    // First introspect coreuser type to see what fields are available
+    const introspectUserQuery = `
+      query {
+        __type(name: "coreuser") {
+          fields { name }
+        }
+      }
+    `;
+
+    const introspectResponse = await fetch(gqlUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ query: introspectUserQuery }),
+    });
+
+    const introspectData = await introspectResponse.json();
+    const userFields = introspectData.data?.__type?.fields?.map((f: any) => f.name) || [];
+    console.log('coreuser fields:', userFields);
+
+    // Introspect coredevice type too
+    const introspectDeviceQuery = `
+      query {
+        __type(name: "coredevice") {
+          fields { name }
+        }
+      }
+    `;
+
+    const introspectDeviceResponse = await fetch(gqlUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ query: introspectDeviceQuery }),
+    });
+
+    const introspectDeviceData = await introspectDeviceResponse.json();
+    const deviceFields = introspectDeviceData.data?.__type?.fields?.map((f: any) => f.name) || [];
+    console.log('coredevice fields:', deviceFields);
+
+    // Build user sub-fields
+    const wantedUserFields = ['displayname', 'fname', 'lname', 'name', 'extension'];
+    const userSubFields = wantedUserFields.filter(f => userFields.includes(f));
+    if (userSubFields.length === 0 && userFields.length > 0) {
+      userSubFields.push(userFields[0]); // Use first available field
+    }
+
+    // Build device sub-fields
+    const wantedDeviceFields = ['deviceId', 'description', 'dial', 'id'];
+    const deviceSubFields = wantedDeviceFields.filter(f => deviceFields.includes(f));
+    if (deviceSubFields.length === 0 && deviceFields.length > 0) {
+      deviceSubFields.push(deviceFields[0]);
+    }
+
+    // Build the query with proper sub-selections
+    let extensionFields = 'extensionId\ntech';
+    if (userSubFields.length > 0) {
+      extensionFields += `\nuser { ${userSubFields.join(' ')} }`;
+    }
+    if (deviceSubFields.length > 0) {
+      extensionFields += `\ncoreDevice { ${deviceSubFields.join(' ')} }`;
+    }
+
     const gqlQuery = `
       query {
         fetchAllExtensions {
@@ -75,16 +133,13 @@ serve(async (req) => {
           message
           totalCount
           extension {
-            extensionId
-            name
-            email
-            outboundCid
-            callerID
-            voicemail
+            ${extensionFields}
           }
         }
       }
     `;
+
+    console.log('GraphQL query:', gqlQuery);
 
     const gqlResponse = await fetch(gqlUrl, {
       method: 'POST',
@@ -95,36 +150,38 @@ serve(async (req) => {
       body: JSON.stringify({ query: gqlQuery }),
     });
 
-    if (!gqlResponse.ok) {
-      const errorText = await gqlResponse.text();
-      console.error('GraphQL request failed:', gqlResponse.status, errorText);
-      throw new Error(`Failed to fetch extensions: ${gqlResponse.status}`);
-    }
-
     const gqlData = await gqlResponse.json();
-    console.log('GraphQL response:', JSON.stringify(gqlData).substring(0, 500));
+    console.log('GraphQL response:', JSON.stringify(gqlData).substring(0, 2000));
 
-    // Check for GraphQL errors
     if (gqlData.errors) {
       console.error('GraphQL errors:', gqlData.errors);
       throw new Error(`GraphQL error: ${gqlData.errors[0]?.message || 'Unknown error'}`);
     }
 
-    // Parse the response
     const fetchResult = gqlData.data?.fetchAllExtensions;
     if (!fetchResult?.status) {
-      console.error('fetchAllExtensions failed:', fetchResult?.message);
       throw new Error(fetchResult?.message || 'Failed to fetch extensions');
     }
 
-    const extensions: FreePBXExtension[] = (fetchResult.extension || []).map((ext: any) => ({
-      extension: String(ext.extensionId || ''),
-      name: ext.name || ext.callerID || '',
-      voicemail: ext.voicemail || '',
-      sipname: ext.extensionId || '',
-      outboundcid: ext.outboundCid || '',
-      email: ext.email || '',
-    }));
+    const extensions: FreePBXExtension[] = (fetchResult.extension || []).map((ext: any) => {
+      const user = ext.user || {};
+      const device = ext.coreDevice || {};
+      
+      let displayName = user.displayname || user.name;
+      if (!displayName && (user.fname || user.lname)) {
+        displayName = `${user.fname || ''} ${user.lname || ''}`.trim();
+      }
+      if (!displayName) {
+        displayName = device.description || `Extension ${ext.extensionId}`;
+      }
+
+      return {
+        extension: String(ext.extensionId || ''),
+        name: displayName,
+        sipname: device.dial || '',
+        tech: ext.tech || '',
+      };
+    });
 
     console.log(`Parsed ${extensions.length} extensions`);
 
