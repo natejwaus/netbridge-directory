@@ -25,129 +25,91 @@ serve(async (req) => {
   }
 
   try {
-    const pbxUsername = Deno.env.get('PBX_USERNAME');
-    const pbxPassword = Deno.env.get('PBX_PASSWORD');
-    const pbxUrl = 'https://pbx.natew.me/admin/config.php?display=bulkhandler&quietmode=1&activity=export&export=extensions';
+    const clientId = Deno.env.get('PBX_CLIENT_ID');
+    const clientSecret = Deno.env.get('PBX_CLIENT_SECRET');
+    
+    const tokenUrl = 'https://pbx.natew.me/admin/api/api/token';
+    const restUrl = 'https://pbx.natew.me/admin/api/api/rest';
 
-    if (!pbxUsername || !pbxPassword) {
-      console.error('PBX credentials not configured');
-      throw new Error('PBX credentials not configured');
+    if (!clientId || !clientSecret) {
+      console.error('PBX API credentials not configured');
+      throw new Error('PBX API credentials not configured');
     }
 
-    console.log('Fetching extensions from FreePBX...');
+    console.log('Authenticating with FreePBX REST API...');
 
-    // Create Basic Auth header
-    const authHeader = 'Basic ' + btoa(`${pbxUsername}:${pbxPassword}`);
-
-    // Step 1: Get the login page to extract the session key
-    const loginPageResponse = await fetch(pbxUrl, {
-      method: 'GET',
+    // Step 1: Get OAuth2 access token using client credentials grant
+    const tokenResponse = await fetch(tokenUrl, {
+      method: 'POST',
       headers: {
-        'Authorization': authHeader,
-        'User-Agent': 'Mozilla/5.0 (compatible; NetBridge Directory/1.0)',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Authorization': 'Basic ' + btoa(`${clientId}:${clientSecret}`),
       },
-      redirect: 'follow',
+      body: new URLSearchParams({
+        'grant_type': 'client_credentials',
+        'scope': 'rest',
+      }).toString(),
     });
 
-    // Check if we got a redirect or login page
-    const loginPageText = await loginPageResponse.text();
-    console.log('Response status:', loginPageResponse.status);
-    console.log('Response length:', loginPageText.length);
-
-    // If the response contains CSV data (extension data), parse it
-    if (loginPageText.includes('extension,') || loginPageText.includes('"extension"')) {
-      const extensions = parseCSV(loginPageText);
-      console.log(`Parsed ${extensions.length} extensions from CSV`);
-      
-      return new Response(JSON.stringify({ 
-        success: true, 
-        extensions,
-        lastUpdated: new Date().toISOString()
-      }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+    if (!tokenResponse.ok) {
+      const errorText = await tokenResponse.text();
+      console.error('Token request failed:', tokenResponse.status, errorText);
+      throw new Error(`Failed to get access token: ${tokenResponse.status}`);
     }
 
-    // If we get HTML (login page), try form-based login
-    if (loginPageText.includes('loginform') || loginPageText.includes('login_form')) {
-      console.log('Login page detected, attempting form login...');
-      
-      // Extract session key if present
-      const sessionKeyMatch = loginPageText.match(/name="sessionKey"\s+value="([^"]+)"/);
-      const sessionKey = sessionKeyMatch ? sessionKeyMatch[1] : '';
-      
-      // Create form data for login
-      const formData = new URLSearchParams();
-      formData.append('username', pbxUsername);
-      formData.append('password', pbxPassword);
-      if (sessionKey) {
-        formData.append('sessionKey', sessionKey);
-      }
+    const tokenData = await tokenResponse.json();
+    const accessToken = tokenData.access_token;
 
-      // Get cookies from the first response
-      const cookies = loginPageResponse.headers.get('set-cookie') || '';
-      
-      // Submit login form
-      const loginResponse = await fetch('https://pbx.natew.me/admin/config.php', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Cookie': cookies,
-          'User-Agent': 'Mozilla/5.0 (compatible; NetBridge Directory/1.0)',
-        },
-        body: formData.toString(),
-        redirect: 'follow',
-      });
-
-      // Get the session cookies after login
-      const authCookies = loginResponse.headers.get('set-cookie') || cookies;
-      
-      // Now fetch the extensions with the authenticated session
-      const extensionsResponse = await fetch(pbxUrl, {
-        method: 'GET',
-        headers: {
-          'Cookie': authCookies,
-          'User-Agent': 'Mozilla/5.0 (compatible; NetBridge Directory/1.0)',
-        },
-        redirect: 'follow',
-      });
-
-      const extensionsText = await extensionsResponse.text();
-      console.log('Extensions response length:', extensionsText.length);
-      
-      if (extensionsText.includes('extension,') || extensionsText.includes('"extension"')) {
-        const extensions = parseCSV(extensionsText);
-        console.log(`Parsed ${extensions.length} extensions from CSV after login`);
-        
-        return new Response(JSON.stringify({ 
-          success: true, 
-          extensions,
-          lastUpdated: new Date().toISOString()
-        }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
-      }
-
-      // Still seeing login page - credentials might be wrong
-      console.error('Still seeing login page after auth attempt');
-      return new Response(JSON.stringify({ 
-        success: false, 
-        error: 'Authentication failed. Please check PBX credentials.',
-        extensions: []
-      }), {
-        status: 401,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+    if (!accessToken) {
+      console.error('No access token in response:', tokenData);
+      throw new Error('No access token received');
     }
 
-    // Unknown response format
-    console.error('Unexpected response format from FreePBX');
+    console.log('Successfully obtained access token');
+
+    // Step 2: Fetch extensions using REST API
+    const extensionsResponse = await fetch(`${restUrl}/core/extensions`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Accept': 'application/json',
+      },
+    });
+
+    if (!extensionsResponse.ok) {
+      const errorText = await extensionsResponse.text();
+      console.error('Extensions request failed:', extensionsResponse.status, errorText);
+      throw new Error(`Failed to fetch extensions: ${extensionsResponse.status}`);
+    }
+
+    const extensionsData = await extensionsResponse.json();
+    console.log('Extensions API response:', JSON.stringify(extensionsData).substring(0, 500));
+
+    // Parse the response - adjust based on actual API structure
+    let extensions: FreePBXExtension[] = [];
+    
+    if (Array.isArray(extensionsData)) {
+      extensions = extensionsData.map(mapExtension);
+    } else if (extensionsData.data && Array.isArray(extensionsData.data)) {
+      extensions = extensionsData.data.map(mapExtension);
+    } else if (extensionsData.extensions && Array.isArray(extensionsData.extensions)) {
+      extensions = extensionsData.extensions.map(mapExtension);
+    } else {
+      console.log('Unexpected response structure, attempting to extract extensions');
+      // Try to find extensions in nested structure
+      const possibleArrays = Object.values(extensionsData).filter(Array.isArray);
+      if (possibleArrays.length > 0) {
+        extensions = (possibleArrays[0] as any[]).map(mapExtension);
+      }
+    }
+
+    console.log(`Parsed ${extensions.length} extensions`);
+
     return new Response(JSON.stringify({ 
-      success: false, 
-      error: 'Unexpected response from PBX',
-      extensions: []
+      success: true, 
+      extensions,
+      lastUpdated: new Date().toISOString()
     }), {
-      status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
 
@@ -165,52 +127,17 @@ serve(async (req) => {
   }
 });
 
-function parseCSV(csvText: string): FreePBXExtension[] {
-  const lines = csvText.trim().split('\n');
-  if (lines.length < 2) return [];
-
-  // Parse header row
-  const headers = parseCSVLine(lines[0]);
-  console.log('CSV Headers:', headers);
-  
-  const extensions: FreePBXExtension[] = [];
-  
-  for (let i = 1; i < lines.length; i++) {
-    const values = parseCSVLine(lines[i]);
-    if (values.length !== headers.length) continue;
-    
-    const ext: Record<string, string> = {};
-    headers.forEach((header, index) => {
-      ext[header.toLowerCase().trim()] = values[index] || '';
-    });
-    
-    // Only include if we have an extension number
-    if (ext.extension) {
-      extensions.push(ext as FreePBXExtension);
-    }
-  }
-  
-  return extensions;
-}
-
-function parseCSVLine(line: string): string[] {
-  const result: string[] = [];
-  let current = '';
-  let inQuotes = false;
-  
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i];
-    
-    if (char === '"') {
-      inQuotes = !inQuotes;
-    } else if (char === ',' && !inQuotes) {
-      result.push(current.trim());
-      current = '';
-    } else {
-      current += char;
-    }
-  }
-  
-  result.push(current.trim());
-  return result;
+function mapExtension(ext: any): FreePBXExtension {
+  // Map various possible field names to our standard structure
+  return {
+    extension: String(ext.extension || ext.extensionId || ext.id || ext.number || ''),
+    name: ext.name || ext.displayName || ext.callerID || ext.description || '',
+    voicemail: ext.voicemail || ext.vmEnabled || '',
+    sipname: ext.sipname || ext.username || '',
+    outboundcid: ext.outboundcid || ext.outboundCid || '',
+    callwaiting: ext.callwaiting || ext.callWaiting || '',
+    vmcontext: ext.vmcontext || '',
+    noanswer: ext.noanswer || '',
+    recording: ext.recording || '',
+  };
 }
