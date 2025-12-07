@@ -32,10 +32,10 @@ const Index = () => {
       <main className="container mx-auto px-4 py-8">
         <div className="mb-8">
           <h2 className="text-3xl font-bold text-foreground mb-2">
-            Company Directory
+            NetBridge PBX Directory
           </h2>
           <p className="text-muted-foreground">
-            Find and connect with team members across the organization
+            Find and connect with team members across NetBridge PBX.
           </p>
         </div>
 
@@ -63,7 +63,7 @@ const Index = () => {
               © {new Date().getFullYear()} NetBridge PBX. All rights reserved.
             </p>
             <p className="text-sm text-muted-foreground">
-              Powered by FreePBX
+              Powered By NateIT https://nateit.com.au
             </p>
           </div>
         </div>
