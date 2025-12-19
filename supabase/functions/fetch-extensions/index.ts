@@ -14,6 +14,146 @@ interface FreePBXExtension {
   [key: string]: string | undefined;
 }
 
+interface ExtensionState {
+  extension: string;
+  status: string;
+  statusText: string;
+}
+
+// Map Asterisk status codes to our status types
+function mapAsteriskStatus(status: number): { status: string; statusText: string } {
+  switch (status) {
+    case 0:
+      return { status: 'available', statusText: 'Available' };
+    case 1:
+      return { status: 'incall', statusText: 'On Call' };
+    case 2:
+      return { status: 'busy', statusText: 'Busy' };
+    case 4:
+      return { status: 'unavailable', statusText: 'Not Registered' };
+    case 8:
+      return { status: 'ringing', statusText: 'Ringing' };
+    case 9:
+      return { status: 'incall', statusText: 'On Call & Ringing' };
+    case 16:
+      return { status: 'hold', statusText: 'On Hold' };
+    case 17:
+      return { status: 'hold', statusText: 'On Hold' };
+    default:
+      if (status < 0) {
+        return { status: 'unavailable', statusText: 'Not Registered' };
+      }
+      return { status: 'unknown', statusText: 'Unknown' };
+  }
+}
+
+// Connect to AMI and get extension states
+async function getExtensionStates(extensions: string[]): Promise<Map<string, ExtensionState>> {
+  const amiHost = Deno.env.get('AMI_HOST');
+  const amiPort = parseInt(Deno.env.get('AMI_PORT') || '5038');
+  const amiUsername = Deno.env.get('AMI_USERNAME');
+  const amiSecret = Deno.env.get('AMI_SECRET');
+
+  const states = new Map<string, ExtensionState>();
+
+  if (!amiHost || !amiUsername || !amiSecret) {
+    console.log('AMI credentials not configured, returning empty states');
+    return states;
+  }
+
+  let conn: Deno.TcpConn | null = null;
+
+  try {
+    console.log(`Connecting to AMI at ${amiHost}:${amiPort}`);
+    
+    conn = await Deno.connect({
+      hostname: amiHost,
+      port: amiPort,
+    });
+
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+
+    // Read AMI banner
+    const bannerBuffer = new Uint8Array(512);
+    await conn.read(bannerBuffer);
+    console.log('AMI Banner received');
+
+    // Helper to send AMI command and read response
+    const sendCommand = async (command: string): Promise<string> => {
+      const fullCommand = command + "\r\n\r\n";
+      await conn!.write(encoder.encode(fullCommand));
+      
+      let response = '';
+      const buffer = new Uint8Array(4096);
+      
+      // Read until we get a complete response (ends with \r\n\r\n)
+      while (true) {
+        const n = await conn!.read(buffer);
+        if (n === null) break;
+        response += decoder.decode(buffer.subarray(0, n));
+        if (response.includes('\r\n\r\n')) break;
+      }
+      
+      return response;
+    };
+
+    // Login to AMI
+    const loginCmd = `Action: Login\r\nUsername: ${amiUsername}\r\nSecret: ${amiSecret}`;
+    const loginResponse = await sendCommand(loginCmd);
+    
+    if (!loginResponse.includes('Success')) {
+      console.error('AMI Login failed:', loginResponse);
+      return states;
+    }
+    console.log('AMI Login successful');
+
+    // Get extension states for each extension
+    for (const ext of extensions) {
+      try {
+        // Try ext-local context first (FreePBX default)
+        const stateCmd = `Action: ExtensionState\r\nExten: ${ext}\r\nContext: ext-local`;
+        const stateResponse = await sendCommand(stateCmd);
+        
+        // Parse the response for status
+        const statusMatch = stateResponse.match(/Status:\s*(-?\d+)/);
+        const statusTextMatch = stateResponse.match(/StatusText:\s*(.+?)(?:\r\n|$)/);
+        
+        if (statusMatch) {
+          const statusCode = parseInt(statusMatch[1]);
+          const mapped = mapAsteriskStatus(statusCode);
+          states.set(ext, {
+            extension: ext,
+            status: mapped.status,
+            statusText: statusTextMatch ? statusTextMatch[1].trim() : mapped.statusText,
+          });
+          console.log(`Extension ${ext}: status=${statusCode} (${mapped.statusText})`);
+        }
+      } catch (err) {
+        console.error(`Error getting state for extension ${ext}:`, err);
+      }
+    }
+
+    // Logoff from AMI
+    try {
+      await sendCommand('Action: Logoff');
+    } catch {}
+    
+    console.log(`Got states for ${states.size}/${extensions.length} extensions`);
+    
+  } catch (err) {
+    console.error('AMI connection error:', err);
+  } finally {
+    if (conn) {
+      try {
+        conn.close();
+      } catch {}
+    }
+  }
+
+  return states;
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -107,7 +247,7 @@ serve(async (req) => {
     const wantedUserFields = ['displayname', 'fname', 'lname', 'name', 'extension'];
     const userSubFields = wantedUserFields.filter(f => userFields.includes(f));
     if (userSubFields.length === 0 && userFields.length > 0) {
-      userSubFields.push(userFields[0]); // Use first available field
+      userSubFields.push(userFields[0]);
     }
 
     // Build device sub-fields
@@ -185,9 +325,24 @@ serve(async (req) => {
 
     console.log(`Parsed ${extensions.length} extensions`);
 
+    // Fetch real-time states from AMI
+    const extensionIds = extensions.map(e => e.extension).filter(Boolean);
+    console.log('Fetching extension states from AMI...');
+    const extensionStates = await getExtensionStates(extensionIds);
+
+    // Merge extensions with their states
+    const extensionsWithStatus = extensions.map(ext => {
+      const state = extensionStates.get(ext.extension);
+      return {
+        ...ext,
+        status: state?.status || 'unknown',
+        statusText: state?.statusText || 'Unknown',
+      };
+    });
+
     return new Response(JSON.stringify({ 
       success: true, 
-      extensions,
+      extensions: extensionsWithStatus,
       lastUpdated: new Date().toISOString()
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
