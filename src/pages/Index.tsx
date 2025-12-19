@@ -35,7 +35,7 @@ const Index = () => {
             NetBridge PBX Directory
           </h2>
           <p className="text-muted-foreground">
-            Find and connect with team members across NetBridge PBX.
+            Find and connect with users on NetBridge PBX.
           </p>
         </div>
 
@@ -63,7 +63,7 @@ const Index = () => {
               © {new Date().getFullYear()} NetBridge PBX. All rights reserved.
             </p>
             <p className="text-sm text-muted-foreground">
-              Powered By NateIT https://nateit.com.au
+              "Call Extension" provided by PhoneNet.
             </p>
           </div>
         </div>
