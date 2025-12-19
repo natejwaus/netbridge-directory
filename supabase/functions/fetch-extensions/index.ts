@@ -16,43 +16,6 @@ interface FreePBXExtension {
   [key: string]: string | undefined;
 }
 
-// Map FreePBX device status to our status types
-function mapDeviceStatus(deviceStatus: string | null, dnd: boolean): { status: string; statusText: string } {
-  // Check DND first
-  if (dnd) {
-    return { status: 'dnd', statusText: 'Do Not Disturb' };
-  }
-  
-  if (!deviceStatus) {
-    return { status: 'unknown', statusText: 'Unknown' };
-  }
-
-  const statusLower = deviceStatus.toLowerCase();
-  
-  // Common PJSIP/SIP status values
-  if (statusLower.includes('not in use') || statusLower.includes('idle') || statusLower === 'available') {
-    return { status: 'available', statusText: 'Available' };
-  }
-  if (statusLower.includes('in use') || statusLower.includes('inuse') || statusLower.includes('busy')) {
-    return { status: 'incall', statusText: 'On Call' };
-  }
-  if (statusLower.includes('ringing') || statusLower.includes('ring')) {
-    return { status: 'ringing', statusText: 'Ringing' };
-  }
-  if (statusLower.includes('hold')) {
-    return { status: 'hold', statusText: 'On Hold' };
-  }
-  if (statusLower.includes('unavailable') || statusLower.includes('unreachable') || statusLower.includes('unknown') || statusLower.includes('invalid')) {
-    return { status: 'unavailable', statusText: 'Not Registered' };
-  }
-  if (statusLower.includes('ok') || statusLower.includes('reachable') || statusLower.includes('registered')) {
-    return { status: 'available', statusText: 'Available' };
-  }
-
-  console.log(`Unknown device status: ${deviceStatus}`);
-  return { status: 'unknown', statusText: deviceStatus };
-}
-
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -98,7 +61,7 @@ serve(async (req) => {
 
     console.log('Successfully obtained access token');
 
-    // Query extensions with status fields from both user and device
+    // Query extensions - note: coreDevice.status causes internal errors so we skip it
     const gqlQuery = `
       query {
         fetchAllExtensions {
@@ -117,14 +80,13 @@ serve(async (req) => {
               deviceId
               description
               dial
-              status
             }
           }
         }
       }
     `;
 
-    console.log('Fetching extensions with status...');
+    console.log('Fetching extensions...');
 
     const gqlResponse = await fetch(gqlUrl, {
       method: 'POST',
@@ -161,23 +123,27 @@ serve(async (req) => {
       const dndValue = user.donotdisturb;
       const isDnd = dndValue === true || dndValue === 'yes' || dndValue === 'YES' || dndValue === '1' || dndValue === 1;
 
-      // Get device status from coreDevice.status
-      const deviceStatus = device.status || null;
-      const mappedStatus = mapDeviceStatus(deviceStatus, isDnd);
-
-      console.log(`Extension ${ext.extensionId}: deviceStatus="${deviceStatus}", dnd=${isDnd} -> ${mappedStatus.status}`);
+      // Since we can't get real-time device status without AMI, 
+      // we show DND if set, otherwise "Available"
+      let status = 'available';
+      let statusText = 'Available';
+      
+      if (isDnd) {
+        status = 'dnd';
+        statusText = 'Do Not Disturb';
+      }
 
       return {
         extension: String(ext.extensionId || ''),
         name: displayName,
         sipname: device.dial || '',
         tech: ext.tech || '',
-        status: mappedStatus.status,
-        statusText: mappedStatus.statusText,
+        status,
+        statusText,
       };
     });
 
-    console.log(`Returning ${extensions.length} extensions with status`);
+    console.log(`Returning ${extensions.length} extensions`);
 
     return new Response(JSON.stringify({ 
       success: true, 
