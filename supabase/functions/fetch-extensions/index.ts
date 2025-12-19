@@ -11,169 +11,46 @@ interface FreePBXExtension {
   voicemail?: string;
   sipname?: string;
   tech?: string;
+  status: string;
+  statusText: string;
   [key: string]: string | undefined;
 }
 
-interface ExtensionState {
-  extension: string;
-  status: string;
-  statusText: string;
-}
-
-// Map Asterisk status codes to our status types
-function mapAsteriskStatus(status: number): { status: string; statusText: string } {
-  switch (status) {
-    case 0:
-      return { status: 'available', statusText: 'Available' };
-    case 1:
-      return { status: 'incall', statusText: 'On Call' };
-    case 2:
-      return { status: 'busy', statusText: 'Busy' };
-    case 4:
-      return { status: 'unavailable', statusText: 'Not Registered' };
-    case 8:
-      return { status: 'ringing', statusText: 'Ringing' };
-    case 9:
-      return { status: 'incall', statusText: 'On Call & Ringing' };
-    case 16:
-      return { status: 'hold', statusText: 'On Hold' };
-    case 17:
-      return { status: 'hold', statusText: 'On Hold' };
-    default:
-      if (status < 0) {
-        return { status: 'unavailable', statusText: 'Not Registered' };
-      }
-      return { status: 'unknown', statusText: 'Unknown' };
+// Map FreePBX device status to our status types
+function mapDeviceStatus(deviceStatus: string | null, dnd: boolean): { status: string; statusText: string } {
+  // Check DND first
+  if (dnd) {
+    return { status: 'dnd', statusText: 'Do Not Disturb' };
   }
-}
-
-// Connect to AMI and get extension states with timeout
-async function getExtensionStates(extensions: string[]): Promise<Map<string, ExtensionState>> {
-  const amiHost = Deno.env.get('AMI_HOST');
-  const amiPort = parseInt(Deno.env.get('AMI_PORT') || '5038');
-  const amiUsername = Deno.env.get('AMI_USERNAME');
-  const amiSecret = Deno.env.get('AMI_SECRET');
-
-  const states = new Map<string, ExtensionState>();
-
-  if (!amiHost || !amiUsername || !amiSecret) {
-    console.log('AMI credentials not configured, skipping status fetch');
-    return states;
+  
+  if (!deviceStatus) {
+    return { status: 'unknown', statusText: 'Unknown' };
   }
 
-  let conn: Deno.TcpConn | null = null;
-
-  try {
-    console.log(`Connecting to AMI at ${amiHost}:${amiPort}`);
-    
-    // Use AbortController for connection timeout (3 seconds)
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3000);
-    
-    try {
-      conn = await Deno.connect({
-        hostname: amiHost,
-        port: amiPort,
-      });
-      clearTimeout(timeoutId);
-    } catch (err) {
-      clearTimeout(timeoutId);
-      console.error('AMI connection failed (firewall/network issue?):', err);
-      return states;
-    }
-
-    const encoder = new TextEncoder();
-    const decoder = new TextDecoder();
-
-    // Read AMI banner with timeout
-    const bannerBuffer = new Uint8Array(512);
-    const bannerPromise = conn.read(bannerBuffer);
-    const bannerTimeout = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Banner timeout')), 2000)
-    );
-    
-    try {
-      await Promise.race([bannerPromise, bannerTimeout]);
-      console.log('AMI Banner received');
-    } catch {
-      console.error('AMI banner timeout');
-      conn.close();
-      return states;
-    }
-
-    // Helper to send AMI command and read response
-    const sendCommand = async (command: string): Promise<string> => {
-      const fullCommand = command + "\r\n\r\n";
-      await conn!.write(encoder.encode(fullCommand));
-      
-      let response = '';
-      const buffer = new Uint8Array(4096);
-      
-      // Read until we get a complete response (ends with \r\n\r\n)
-      while (true) {
-        const n = await conn!.read(buffer);
-        if (n === null) break;
-        response += decoder.decode(buffer.subarray(0, n));
-        if (response.includes('\r\n\r\n')) break;
-      }
-      
-      return response;
-    };
-
-    // Login to AMI
-    const loginCmd = `Action: Login\r\nUsername: ${amiUsername}\r\nSecret: ${amiSecret}`;
-    const loginResponse = await sendCommand(loginCmd);
-    
-    if (!loginResponse.includes('Success')) {
-      console.error('AMI Login failed:', loginResponse);
-      return states;
-    }
-    console.log('AMI Login successful');
-
-    // Get extension states for each extension
-    for (const ext of extensions) {
-      try {
-        // Try ext-local context first (FreePBX default)
-        const stateCmd = `Action: ExtensionState\r\nExten: ${ext}\r\nContext: ext-local`;
-        const stateResponse = await sendCommand(stateCmd);
-        
-        // Parse the response for status
-        const statusMatch = stateResponse.match(/Status:\s*(-?\d+)/);
-        const statusTextMatch = stateResponse.match(/StatusText:\s*(.+?)(?:\r\n|$)/);
-        
-        if (statusMatch) {
-          const statusCode = parseInt(statusMatch[1]);
-          const mapped = mapAsteriskStatus(statusCode);
-          states.set(ext, {
-            extension: ext,
-            status: mapped.status,
-            statusText: statusTextMatch ? statusTextMatch[1].trim() : mapped.statusText,
-          });
-          console.log(`Extension ${ext}: status=${statusCode} (${mapped.statusText})`);
-        }
-      } catch (err) {
-        console.error(`Error getting state for extension ${ext}:`, err);
-      }
-    }
-
-    // Logoff from AMI
-    try {
-      await sendCommand('Action: Logoff');
-    } catch {}
-    
-    console.log(`Got states for ${states.size}/${extensions.length} extensions`);
-    
-  } catch (err) {
-    console.error('AMI connection error:', err);
-  } finally {
-    if (conn) {
-      try {
-        conn.close();
-      } catch {}
-    }
+  const statusLower = deviceStatus.toLowerCase();
+  
+  // Common PJSIP/SIP status values
+  if (statusLower.includes('not in use') || statusLower.includes('idle') || statusLower === 'available') {
+    return { status: 'available', statusText: 'Available' };
+  }
+  if (statusLower.includes('in use') || statusLower.includes('inuse') || statusLower.includes('busy')) {
+    return { status: 'incall', statusText: 'On Call' };
+  }
+  if (statusLower.includes('ringing') || statusLower.includes('ring')) {
+    return { status: 'ringing', statusText: 'Ringing' };
+  }
+  if (statusLower.includes('hold')) {
+    return { status: 'hold', statusText: 'On Hold' };
+  }
+  if (statusLower.includes('unavailable') || statusLower.includes('unreachable') || statusLower.includes('unknown') || statusLower.includes('invalid')) {
+    return { status: 'unavailable', statusText: 'Not Registered' };
+  }
+  if (statusLower.includes('ok') || statusLower.includes('reachable') || statusLower.includes('registered')) {
+    return { status: 'available', statusText: 'Available' };
   }
 
-  return states;
+  console.log(`Unknown device status: ${deviceStatus}`);
+  return { status: 'unknown', statusText: deviceStatus };
 }
 
 serve(async (req) => {
@@ -221,73 +98,7 @@ serve(async (req) => {
 
     console.log('Successfully obtained access token');
 
-    // First introspect coreuser type to see what fields are available
-    const introspectUserQuery = `
-      query {
-        __type(name: "coreuser") {
-          fields { name }
-        }
-      }
-    `;
-
-    const introspectResponse = await fetch(gqlUrl, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ query: introspectUserQuery }),
-    });
-
-    const introspectData = await introspectResponse.json();
-    const userFields = introspectData.data?.__type?.fields?.map((f: any) => f.name) || [];
-    console.log('coreuser fields:', userFields);
-
-    // Introspect coredevice type too
-    const introspectDeviceQuery = `
-      query {
-        __type(name: "coredevice") {
-          fields { name }
-        }
-      }
-    `;
-
-    const introspectDeviceResponse = await fetch(gqlUrl, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ query: introspectDeviceQuery }),
-    });
-
-    const introspectDeviceData = await introspectDeviceResponse.json();
-    const deviceFields = introspectDeviceData.data?.__type?.fields?.map((f: any) => f.name) || [];
-    console.log('coredevice fields:', deviceFields);
-
-    // Build user sub-fields
-    const wantedUserFields = ['displayname', 'fname', 'lname', 'name', 'extension'];
-    const userSubFields = wantedUserFields.filter(f => userFields.includes(f));
-    if (userSubFields.length === 0 && userFields.length > 0) {
-      userSubFields.push(userFields[0]);
-    }
-
-    // Build device sub-fields
-    const wantedDeviceFields = ['deviceId', 'description', 'dial', 'id'];
-    const deviceSubFields = wantedDeviceFields.filter(f => deviceFields.includes(f));
-    if (deviceSubFields.length === 0 && deviceFields.length > 0) {
-      deviceSubFields.push(deviceFields[0]);
-    }
-
-    // Build the query with proper sub-selections
-    let extensionFields = 'extensionId\ntech';
-    if (userSubFields.length > 0) {
-      extensionFields += `\nuser { ${userSubFields.join(' ')} }`;
-    }
-    if (deviceSubFields.length > 0) {
-      extensionFields += `\ncoreDevice { ${deviceSubFields.join(' ')} }`;
-    }
-
+    // Query extensions with status fields from both user and device
     const gqlQuery = `
       query {
         fetchAllExtensions {
@@ -295,13 +106,25 @@ serve(async (req) => {
           message
           totalCount
           extension {
-            ${extensionFields}
+            extensionId
+            tech
+            user {
+              name
+              extension
+              donotdisturb
+            }
+            coreDevice {
+              deviceId
+              description
+              dial
+              status
+            }
           }
         }
       }
     `;
 
-    console.log('GraphQL query:', gqlQuery);
+    console.log('Fetching extensions with status...');
 
     const gqlResponse = await fetch(gqlUrl, {
       method: 'POST',
@@ -313,7 +136,7 @@ serve(async (req) => {
     });
 
     const gqlData = await gqlResponse.json();
-    console.log('GraphQL response:', JSON.stringify(gqlData).substring(0, 2000));
+    console.log('GraphQL response received');
 
     if (gqlData.errors) {
       console.error('GraphQL errors:', gqlData.errors);
@@ -329,42 +152,36 @@ serve(async (req) => {
       const user = ext.user || {};
       const device = ext.coreDevice || {};
       
-      let displayName = user.displayname || user.name;
-      if (!displayName && (user.fname || user.lname)) {
-        displayName = `${user.fname || ''} ${user.lname || ''}`.trim();
-      }
+      let displayName = user.name;
       if (!displayName) {
         displayName = device.description || `Extension ${ext.extensionId}`;
       }
+
+      // Get DND status (could be string "yes"/"no" or boolean)
+      const dndValue = user.donotdisturb;
+      const isDnd = dndValue === true || dndValue === 'yes' || dndValue === 'YES' || dndValue === '1' || dndValue === 1;
+
+      // Get device status from coreDevice.status
+      const deviceStatus = device.status || null;
+      const mappedStatus = mapDeviceStatus(deviceStatus, isDnd);
+
+      console.log(`Extension ${ext.extensionId}: deviceStatus="${deviceStatus}", dnd=${isDnd} -> ${mappedStatus.status}`);
 
       return {
         extension: String(ext.extensionId || ''),
         name: displayName,
         sipname: device.dial || '',
         tech: ext.tech || '',
+        status: mappedStatus.status,
+        statusText: mappedStatus.statusText,
       };
     });
 
-    console.log(`Parsed ${extensions.length} extensions`);
-
-    // Fetch real-time states from AMI
-    const extensionIds = extensions.map(e => e.extension).filter(Boolean);
-    console.log('Fetching extension states from AMI...');
-    const extensionStates = await getExtensionStates(extensionIds);
-
-    // Merge extensions with their states
-    const extensionsWithStatus = extensions.map(ext => {
-      const state = extensionStates.get(ext.extension);
-      return {
-        ...ext,
-        status: state?.status || 'unknown',
-        statusText: state?.statusText || 'Unknown',
-      };
-    });
+    console.log(`Returning ${extensions.length} extensions with status`);
 
     return new Response(JSON.stringify({ 
       success: true, 
-      extensions: extensionsWithStatus,
+      extensions,
       lastUpdated: new Date().toISOString()
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
