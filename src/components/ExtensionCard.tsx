@@ -7,30 +7,51 @@ interface ExtensionCardProps {
 }
 
 const statusConfig = {
-  online: {
+  available: {
     label: 'Available',
     class: 'status-online',
     dot: 'bg-accent',
   },
-  offline: {
-    label: 'Offline',
-    class: 'status-offline',
-    dot: 'bg-muted-foreground',
+  incall: {
+    label: 'On Call',
+    class: 'status-busy',
+    dot: 'bg-destructive',
+  },
+  ringing: {
+    label: 'Ringing',
+    class: 'bg-amber-500/10 text-amber-600',
+    dot: 'bg-amber-500',
   },
   busy: {
     label: 'Busy',
     class: 'status-busy',
     dot: 'bg-destructive',
   },
-  away: {
-    label: 'Away',
-    class: 'bg-amber-500/10 text-amber-600',
-    dot: 'bg-amber-500',
+  dnd: {
+    label: 'Do Not Disturb',
+    class: 'bg-orange-500/10 text-orange-600',
+    dot: 'bg-orange-500',
+  },
+  unavailable: {
+    label: 'Not Registered',
+    class: 'status-offline',
+    dot: 'bg-muted-foreground',
+  },
+  hold: {
+    label: 'On Hold',
+    class: 'bg-purple-500/10 text-purple-600',
+    dot: 'bg-purple-500',
+  },
+  unknown: {
+    label: 'Unknown',
+    class: 'status-offline',
+    dot: 'bg-muted-foreground',
   },
 };
 
 export function ExtensionCard({ extension, index }: ExtensionCardProps) {
-  const status = statusConfig[extension.status];
+  const status = statusConfig[extension.status] || statusConfig.unknown;
+  const displayStatusText = extension.statusText || status.label;
   
   return (
     <div 
@@ -52,7 +73,7 @@ export function ExtensionCard({ extension, index }: ExtensionCardProps) {
               </span>
               <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${status.class}`}>
                 <span className={`h-1.5 w-1.5 rounded-full ${status.dot}`} />
-                {status.label}
+                {displayStatusText}
               </span>
             </div>
           </div>

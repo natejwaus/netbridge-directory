@@ -7,15 +7,15 @@ interface StatsBarProps {
 
 export function StatsBar({ extensions }: StatsBarProps) {
   const total = extensions.length;
-  const online = extensions.filter(e => e.status === 'online').length;
-  const busy = extensions.filter(e => e.status === 'busy').length;
-  const offline = extensions.filter(e => e.status === 'offline').length;
+  const available = extensions.filter(e => e.status === 'available').length;
+  const onCall = extensions.filter(e => e.status === 'incall' || e.status === 'busy' || e.status === 'ringing' || e.status === 'hold').length;
+  const unavailable = extensions.filter(e => e.status === 'unavailable' || e.status === 'unknown').length;
 
   const stats = [
     { label: 'Total', value: total, icon: Users, color: 'text-primary bg-primary/10' },
-    { label: 'Available', value: online, icon: UserCheck, color: 'text-accent bg-accent/10' },
-    { label: 'Busy', value: busy, icon: Phone, color: 'text-destructive bg-destructive/10' },
-    { label: 'Offline', value: offline, icon: UserX, color: 'text-muted-foreground bg-muted' },
+    { label: 'Available', value: available, icon: UserCheck, color: 'text-accent bg-accent/10' },
+    { label: 'On Call', value: onCall, icon: Phone, color: 'text-destructive bg-destructive/10' },
+    { label: 'Unavailable', value: unavailable, icon: UserX, color: 'text-muted-foreground bg-muted' },
   ];
 
   return (
