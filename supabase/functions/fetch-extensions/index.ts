@@ -47,7 +47,7 @@ function mapAsteriskStatus(status: number): { status: string; statusText: string
   }
 }
 
-// Connect to AMI and get extension states
+// Connect to AMI and get extension states with timeout
 async function getExtensionStates(extensions: string[]): Promise<Map<string, ExtensionState>> {
   const amiHost = Deno.env.get('AMI_HOST');
   const amiPort = parseInt(Deno.env.get('AMI_PORT') || '5038');
@@ -57,7 +57,7 @@ async function getExtensionStates(extensions: string[]): Promise<Map<string, Ext
   const states = new Map<string, ExtensionState>();
 
   if (!amiHost || !amiUsername || !amiSecret) {
-    console.log('AMI credentials not configured, returning empty states');
+    console.log('AMI credentials not configured, skipping status fetch');
     return states;
   }
 
@@ -66,18 +66,40 @@ async function getExtensionStates(extensions: string[]): Promise<Map<string, Ext
   try {
     console.log(`Connecting to AMI at ${amiHost}:${amiPort}`);
     
-    conn = await Deno.connect({
-      hostname: amiHost,
-      port: amiPort,
-    });
+    // Use AbortController for connection timeout (3 seconds)
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+    
+    try {
+      conn = await Deno.connect({
+        hostname: amiHost,
+        port: amiPort,
+      });
+      clearTimeout(timeoutId);
+    } catch (err) {
+      clearTimeout(timeoutId);
+      console.error('AMI connection failed (firewall/network issue?):', err);
+      return states;
+    }
 
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
 
-    // Read AMI banner
+    // Read AMI banner with timeout
     const bannerBuffer = new Uint8Array(512);
-    await conn.read(bannerBuffer);
-    console.log('AMI Banner received');
+    const bannerPromise = conn.read(bannerBuffer);
+    const bannerTimeout = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Banner timeout')), 2000)
+    );
+    
+    try {
+      await Promise.race([bannerPromise, bannerTimeout]);
+      console.log('AMI Banner received');
+    } catch {
+      console.error('AMI banner timeout');
+      conn.close();
+      return states;
+    }
 
     // Helper to send AMI command and read response
     const sendCommand = async (command: string): Promise<string> => {
